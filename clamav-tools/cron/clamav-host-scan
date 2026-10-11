@@ -3,4 +3,4 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Every night at midnight
-0 0 * * * root /bin/bash /opt/clamav-tools/scan-clamav.sh
+0 0 * * * root /bin/bash /home/pi/scripts/clamav-tools/scan-clamav.sh
