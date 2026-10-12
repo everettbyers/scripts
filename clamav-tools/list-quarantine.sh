@@ -23,7 +23,6 @@ fi
 printf 'ClamAV quarantine: %s\n' "$QUARANTINE_DIR"
 printf '%-16s %14s  %s\n' 'LAST MODIFIED' 'SIZE (bytes)' 'FULL PATH'
 printf '%-16s %14s  %s\n' '-------------' '------------' '---------'
-
 find "$QUARANTINE_DIR" -type f \
     -printf '%TY-%Tm-%Td %TH:%TM %14s  %p\n' | sort -r
 
