@@ -16,7 +16,28 @@ if ! command -v apt-get >/dev/null 2>&1 || ! command -v systemctl >/dev/null 2>&
     exit 2
 fi
 
-# Under sudo, USER is usually root. SUDO_USER names the real login account.
+# Locate repo files regardless of the Git clone path.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCANNER_SOURCE="$SCRIPT_DIR/scan-clamav.sh"
+CRON_SOURCE="$SCRIPT_DIR/cron/clamav-host-scan"
+SCANNER_INSTALLED=/usr/local/sbin/scan-clamav.sh
+CRON_INSTALLED=/etc/cron.d/clamav-host-scan
+EXPECTED_CRON='0 0 * * * root /bin/bash /usr/local/sbin/scan-clamav.sh'
+
+if [[ ! -f "$SCANNER_SOURCE" || ! -f "$CRON_SOURCE" ]]; then
+    echo "ERROR: Missing scanner or cron template under: $SCRIPT_DIR" >&2
+    exit 2
+fi
+bash -n "$SCANNER_SOURCE"
+
+# Validate the actual scheduled command before installing anything.
+if ! grep -Fxq -- "$EXPECTED_CRON" "$CRON_SOURCE"; then
+    echo 'ERROR: Cron template must include the exact midnight scanner command:' >&2
+    echo "  $EXPECTED_CRON" >&2
+    exit 2
+fi
+
+# SUDO_USER is the invoking account; root's USER cannot identify it.
 LOGIN_USER="${1:-${SUDO_USER:-}}"
 if [[ -z "$LOGIN_USER" || "$LOGIN_USER" == root ]]; then
     echo 'ERROR: Specify the account for /home/<user>/clamav-logs.' >&2
@@ -29,7 +50,7 @@ if [[ ! "$LOGIN_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || ! id "$LOGIN_USER" >/dev/null
 fi
 USER_HOME="/home/$LOGIN_USER"
 if [[ ! -d "$USER_HOME" ]]; then
-    echo "ERROR: $USER_HOME does not exist (logs are configured for /home/<user>)." >&2
+    echo "ERROR: $USER_HOME does not exist." >&2
     exit 2
 fi
 USER_GROUP="$(id -gn "$LOGIN_USER")"
@@ -45,28 +66,66 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y clamav clamav-freshclam cron util-linux
 
-# Logs are writable by the login account; the scanner writes logs with that
-# account's privileges even though filesystem scans run as root.
+# Scanner writes user-readable logs; quarantine remains root-only.
 install -d -o "$LOGIN_USER" -g "$USER_GROUP" -m 0700 "$LOG_DIR"
-chmod 0700 "$LOG_DIR"
 install -d -o root -g root -m 0700 "$QUARANTINE_DIR"
 
-# Cron cannot rely on SUDO_USER or USER. Persist the chosen account.
+# Root cron uses this saved account instead of relying on $USER.
 printf '%s\n' "$LOGIN_USER" > "$CONFIG_FILE"
 chown root:root "$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"
 
+# Install reviewed, root-owned copies rather than running Git worktree files.
+install -o root -g root -m 0750 "$SCANNER_SOURCE" "$SCANNER_INSTALLED"
+install -o root -g root -m 0644 "$CRON_SOURCE" "$CRON_INSTALLED"
+
 systemctl enable --now clamav-freshclam
 systemctl enable --now cron
 
-printf '\nInstallation complete.\n'
+printf '\n=== Installation verification ===\n'
 clamscan --version
-printf 'Log directory: %s\nQuarantine directory: %s\n' "$LOG_DIR" "$QUARANTINE_DIR"
-printf 'Signature updater: '
+printf 'FreshClam: '
 systemctl is-active clamav-freshclam
 printf 'Cron: '
 systemctl is-active cron
-printf '\nTry a detection-only scan from the Git checkout:\n'
-printf '  sudo bash /opt/clamav-tools/scan-clamav.sh --dry-run\n'
-printf '\nRun normally to move detected files to quarantine:\n'
-printf '  sudo bash /opt/clamav-tools/scan-clamav.sh\n'
+printf 'Scanner syntax: '
+bash -n "$SCANNER_INSTALLED" && echo 'OK'
+printf 'Installed schedule:\n'
+cat "$CRON_INSTALLED"
+
+printf '\n========================================\n'
+printf ' ClamAV Installation Complete\n'
+printf '========================================\n'
+printf 'Scanner:    %s\n' "$SCANNER_INSTALLED"
+printf 'Logs:       %s\n' "$LOG_DIR"
+printf 'Quarantine: %s\n' "$QUARANTINE_DIR"
+printf 'Schedule:   Every night at midnight (server local time)\n\n'
+
+# Optional post-installation dry run; skip for unattended installation.
+if [[ -t 0 ]]; then
+    REPLY=''
+    if read -r -p 'Run a ClamAV detection-only scan of /etc now? [y/N]: ' REPLY; then
+        case "$REPLY" in
+            [Yy]|[Yy][Ee][Ss])
+                echo 'Running detection-only scan; no files will be moved or deleted.'
+                SCAN_RESULT=0
+                bash "$SCANNER_INSTALLED" --dry-run /etc || SCAN_RESULT=$?
+                case "$SCAN_RESULT" in
+                    0) echo 'Dry run completed: no threats detected.' ;;
+                    1) echo "Dry run completed: detections found. Review $LOG_DIR." ;;
+                    *) echo "ERROR: Scan failed (exit $SCAN_RESULT)." >&2; exit "$SCAN_RESULT" ;;
+                esac
+                ;;
+            *) echo 'Dry run skipped.' ;;
+        esac
+    else
+        echo 'No response received; dry run skipped.'
+    fi
+else
+    echo 'Non-interactive installation: dry run skipped.'
+fi
+
+printf '\nManual detection-only scan:\n  sudo bash %s --dry-run /etc\n' "$SCANNER_INSTALLED"
+printf 'Normal scan (moves detections to quarantine):\n  sudo bash %s\n' "$SCANNER_INSTALLED"
+printf '\nGit pulls do not replace the installed root-owned scanner.\n'
+printf 'Rerun this installer after reviewing and approving scanner updates.\n'
