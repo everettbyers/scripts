@@ -20,15 +20,24 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCANNER_SOURCE="$SCRIPT_DIR/scan-clamav.sh"
 CRON_SOURCE="$SCRIPT_DIR/cron/clamav-host-scan"
+QUARANTINE_SOURCE="$SCRIPT_DIR/list-quarantine.sh"
+
 SCANNER_INSTALLED=/usr/local/sbin/scan-clamav.sh
 CRON_INSTALLED=/etc/cron.d/clamav-host-scan
+QUARANTINE_INSTALLED=/usr/local/sbin/list-clamav-quarantine.sh
 EXPECTED_CRON='0 0 * * * root /bin/bash /usr/local/sbin/scan-clamav.sh'
 
-if [[ ! -f "$SCANNER_SOURCE" || ! -f "$CRON_SOURCE" ]]; then
-    echo "ERROR: Missing scanner or cron template under: $SCRIPT_DIR" >&2
-    exit 2
-fi
+# Verify all required repository files exist
+for file in "$SCANNER_SOURCE" "$CRON_SOURCE" "$QUARANTINE_SOURCE"; do
+    if [[ ! -f "$file" ]]; then
+        echo "ERROR: Missing required file: $file" >&2
+        exit 2
+    fi
+done
+
+# Validate Bash scripts before installation
 bash -n "$SCANNER_SOURCE"
+bash -n "$QUARANTINE_SOURCE"
 
 # Validate the actual scheduled command before installing anything.
 if ! grep -Fxq -- "$EXPECTED_CRON" "$CRON_SOURCE"; then
@@ -75,9 +84,16 @@ printf '%s\n' "$LOGIN_USER" > "$CONFIG_FILE"
 chown root:root "$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"
 
-# Install reviewed, root-owned copies rather than running Git worktree files.
-install -o root -g root -m 0750 "$SCANNER_SOURCE" "$SCANNER_INSTALLED"
-install -o root -g root -m 0644 "$CRON_SOURCE" "$CRON_INSTALLED"
+# Install reviewed, root-owned tools
+install -o root -g root -m 0750 \
+    "$SCANNER_SOURCE" "$SCANNER_INSTALLED"
+
+install -o root -g root -m 0750 \
+    "$QUARANTINE_SOURCE" "$QUARANTINE_INSTALLED"
+
+# Install midnight cron configuration
+install -o root -g root -m 0644 \
+    "$CRON_SOURCE" "$CRON_INSTALLED"
 
 systemctl enable --now clamav-freshclam
 systemctl enable --now cron
@@ -100,6 +116,8 @@ printf 'Scanner:    %s\n' "$SCANNER_INSTALLED"
 printf 'Logs:       %s\n' "$LOG_DIR"
 printf 'Quarantine: %s\n' "$QUARANTINE_DIR"
 printf 'Schedule:   Every night at midnight (server local time)\n\n'
+printf '\nView quarantined files:\n'
+printf '  sudo %s\n' "$QUARANTINE_INSTALLED"
 
 # Optional post-installation dry run; skip for unattended installation.
 if [[ -t 0 ]]; then
