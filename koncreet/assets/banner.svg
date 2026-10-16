@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="832" height="289" viewBox="0 0 832 289" role="img" aria-label="koncreet - first-hour server hardening">
+  <title>koncreet</title>
+  <rect width="832" height="289" fill="#0f1419"/>
+  <!-- Native SVG text (no foreignObject) so k/t cap underscores are not clipped. -->
+  <text
+    fill="#e6edf3"
+    font-family="Consolas, 'Courier New', ui-monospace, monospace"
+    font-size="32"
+    xml:space="preserve"
+  ><tspan x="56" y="72"> _                                  _</tspan><tspan x="56" dy="38">| | _____  _ __   ___ _ __ ___  ___| |_</tspan><tspan x="56" dy="38">| |/ / _ \| '_ \ / __| '__/ _ \/ _ \ __|</tspan><tspan x="56" dy="38">|   &lt; (_) | | | | (__| | |  __/  __/ |_</tspan><tspan x="56" dy="38">|_|\_\___/|_| |_|\___|_|  \___|\___|\__|</tspan></text>
+  <text
+    x="56"
+    y="250"
+    fill="#8b949e"
+    font-family="Consolas, 'Courier New', ui-monospace, monospace"
+    font-size="20"
+  >first-hour server hardening</text>
+</svg>
