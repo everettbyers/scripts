@@ -40,24 +40,13 @@ for tool in clamscan freshclam flock systemctl tee runuser; do
     fi
 done
 
-CONFIG_FILE=/etc/clamav-host-scan-user
-if [[ ! -f "$CONFIG_FILE" || ! -r "$CONFIG_FILE" ]]; then
-    echo 'ERROR: Installer configuration missing. Run install-clamav.sh first.' >&2
+LOG_DIR=/var/log/clamav
+if [[ -L "$LOG_DIR" || ! -d "$LOG_DIR" ]]; then
+    echo "ERROR: Invalid or missing log directory: $LOG_DIR" >&2
     exit 2
 fi
-# Only root should be able to change the user selected during installation.
-if [[ "$(stat -c %u "$CONFIG_FILE")" != 0 ]]; then
-    echo "ERROR: Configuration must be owned by root: $CONFIG_FILE" >&2
-    exit 2
-fi
-read -r LOG_USER < "$CONFIG_FILE" || true
-if [[ ! "${LOG_USER:-}" =~ ^[a-z_][a-z0-9_-]*$ ]] || [[ "$LOG_USER" == root ]] || ! id "$LOG_USER" >/dev/null 2>&1; then
-    echo 'ERROR: Invalid configured logging account.' >&2
-    exit 2
-fi
-LOG_DIR="/home/$LOG_USER/clamav-logs"
-if [[ ! -d "$LOG_DIR" ]]; then
-    echo "ERROR: Log directory missing: $LOG_DIR; rerun the installer." >&2
+if ! runuser -u clamav -- test -w "$LOG_DIR"; then
+    echo "ERROR: clamav cannot write to $LOG_DIR; check permissions." >&2
     exit 2
 fi
 
@@ -73,9 +62,15 @@ LOG_FILE="$LOG_DIR/host-scan-$RUN_ID.log"
 QUARANTINE_BASE=/var/quarantine/clamav
 QUARANTINE_DIR="$QUARANTINE_BASE/$RUN_ID"
 
-# Never use root privileges to open a log in a user-writable home directory.
-# The log is user-owned and user-readable, NOT a tamper-resistant audit log.
-exec > >(runuser -u "$LOG_USER" -- tee -a -- "$LOG_FILE") 2>&1
+# Verify that the log file can be created before scanning.
+if ! runuser -u clamav -- touch -- "$LOG_FILE"; then
+    echo "ERROR: Cannot create scan log: $LOG_FILE" >&2
+    exit 2
+fi
+
+# Write operational logs as clamav, not root.
+# These logs are not tamper-resistant security audit records.
+exec > >(runuser -u clamav -- tee -a -- "$LOG_FILE") 2>&1
 printf 'ClamAV scan started: %s\nLog: %s\nMode: %s\n' \
     "$(date -Is)" "$LOG_FILE" "$([[ $DRY_RUN == 1 ]] && echo detection-only || echo quarantine)"
 
@@ -146,7 +141,6 @@ SCAN_OPTS=(
     '--exclude-dir=^/var/lib/containerd(/|$)'
     '--exclude-dir=^/var/quarantine(/|$)'
     '--exclude-dir=^/var/log/clamav(/|$)'
-    "--exclude-dir=^${LOG_DIR}(/|\$)"
 )
 
 if (( DRY_RUN == 0 )); then

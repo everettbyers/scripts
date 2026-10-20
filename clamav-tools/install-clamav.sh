@@ -45,43 +45,27 @@ if ! grep -Fxq -- "$EXPECTED_CRON" "$CRON_SOURCE"; then
     exit 2
 fi
 
-# SUDO_USER is the invoking account; root's USER cannot identify it.
-LOGIN_USER="${1:-${SUDO_USER:-}}"
-if [[ -z "$LOGIN_USER" || "$LOGIN_USER" == root ]]; then
-    echo 'ERROR: Specify the account for /home/<user>/clamav-logs.' >&2
-    echo 'Example: sudo bash install-clamav.sh pi' >&2
-    exit 2
-fi
-if [[ ! "$LOGIN_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || ! id "$LOGIN_USER" >/dev/null 2>&1; then
-    echo "ERROR: Invalid or unknown username: $LOGIN_USER" >&2
-    exit 2
-fi
-USER_HOME="/home/$LOGIN_USER"
-if [[ ! -d "$USER_HOME" ]]; then
-    echo "ERROR: $USER_HOME does not exist." >&2
-    exit 2
-fi
-USER_GROUP="$(id -gn "$LOGIN_USER")"
-LOG_DIR="$USER_HOME/clamav-logs"
+# Optional legacy username argument is accepted but no longer used.
+LOG_DIR=/var/log/clamav
 if [[ -L "$LOG_DIR" ]]; then
     echo "ERROR: Refusing symlink for log directory: $LOG_DIR" >&2
     exit 2
 fi
 QUARANTINE_DIR=/var/quarantine/clamav
-CONFIG_FILE=/etc/clamav-host-scan-user
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y clamav clamav-freshclam cron util-linux
 
-# Scanner writes user-readable logs; quarantine remains root-only.
-install -d -o "$LOGIN_USER" -g "$USER_GROUP" -m 0700 "$LOG_DIR"
+# Preserve existing package-managed ClamAV directory permissions.
+if [[ ! -d "$LOG_DIR" ]]; then
+    install -d -o clamav -g "$(id -gn clamav)" -m 0750 "$LOG_DIR"
+fi
+if ! runuser -u clamav -- test -w "$LOG_DIR"; then
+    echo "ERROR: clamav cannot write to $LOG_DIR; check permissions." >&2
+    exit 2
+fi
 install -d -o root -g root -m 0700 "$QUARANTINE_DIR"
-
-# Root cron uses this saved account instead of relying on $USER.
-printf '%s\n' "$LOGIN_USER" > "$CONFIG_FILE"
-chown root:root "$CONFIG_FILE"
-chmod 0600 "$CONFIG_FILE"
 
 # Install reviewed, root-owned copies rather than running Git worktree files.
 install -o root -g root -m 0750 "$SCANNER_SOURCE" "$SCANNER_INSTALLED"

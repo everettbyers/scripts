@@ -10,7 +10,7 @@ From a clone of `https://github.com/everettbyers/scripts`:
 sudo bash "$HOME/scripts/clamav-tools/install-clamav.sh"
 ```
 
-The installer also creates a private quarantine directory (`/var/quarantine/clamav`), a log directory (`/home/<login-user>/clamav-logs`), and a user configuration file. It offers an optional detection-only scan of `/etc` at the end.
+The installer creates a private quarantine directory (`/var/quarantine/clamav`) and, if necessary, the standard ClamAV log directory (`/var/log/clamav`). It offers an optional detection-only scan of `/etc` at the end.
 
 ## Commands
 
@@ -43,7 +43,7 @@ The installer creates `/etc/cron.d/clamav-host-scan`:
 0 0 * * * root /bin/bash /usr/local/sbin/scan-clamav.sh
 ```
 
-The scanner refreshes FreshClam signatures before scanning, aborts if that update fails, and records scan output in `/home/<login-user>/clamav-logs`. Quarantine actions during regular scans may disrupt live applications; review default targets before enabling unattended scans.
+The scanner refreshes FreshClam signatures before scanning, aborts if that update fails, and records scan output in `/var/log/clamav`. Quarantine actions during regular scans may disrupt live applications; review default targets before enabling unattended scans.
 
 ## Updating from GitHub
 
