@@ -52,9 +52,20 @@ reset_ssh() {
 make_user() {  # make_user NAME [sudo]
   userdel -r "$1" >/dev/null 2>&1 || true
   useradd -m -s /bin/bash "$1"
-  [[ "${2:-}" == "sudo" ]] && usermod -aG sudo "$1"
+  if [[ "${2:-}" == "sudo" ]]; then
+    usermod -aG sudo "$1"
+    # sudo needs a password to type; a locked one fails the gate on purpose
+    echo "$1:Test-$1-pass" | chpasswd
+  fi
   mkdir -p "/home/$1/.ssh"
   echo "$KEY" >"/home/$1/.ssh/authorized_keys"
+}
+# as_user_sudo USER PASSWORD ARGS... - run koncreet through sudo as USER, the way an
+# admin would after logging in with their key. env keeps the stubbed PATH.
+as_user_sudo() {
+  local u="$1" pw="$2"
+  shift 2
+  su "$u" -c "echo '$pw' | sudo -S -p '' env PATH='$PATH' NO_COLOR=1 bash '$ROOT/koncreet' $*" </dev/null
 }
 
 echo "== cloud-init override loses to 00-koncreet.conf =="
@@ -100,16 +111,41 @@ check "ssh apply fails" [ "$rc" -ne 0 ]
 check "no drop-in written" no_dropin
 check "explains missing sudo" grep -q "has SSH keys but cannot use sudo" <<<"$out"
 
-echo "== generated sudo password must be confirmed =="
+echo "== generated sudo password: root run refuses, sudo as the user proves it =="
+reset_ssh
+make_user deploy sudo
+echo 'deploy:GeneratedPass123' | chpasswd
+echo 'GeneratedPass123' >/root/deploy.koncreet-password
+out="$(koncreet --yes ssh apply 2>&1)"; rc=$?
+check "root run refuses even with --yes" [ "$rc" -ne 0 ]
+check "nothing hardened by the root run" no_dropin
+check "root run never prints the password" bash -c "! grep -q GeneratedPass123 <<<\"\$1\"" _ "$out"
+check "root run says to use sudo as deploy" grep -q 'Log in as deploy, check sudo -v, then run: sudo koncreet ssh apply' <<<"$out"
+out="$(as_user_sudo deploy GeneratedPass123 --yes ssh apply 2>&1)"
+check "sudo as deploy hardens" [ -f "$DROPIN" ]
+check "sudo run never prints the password" bash -c "! grep -q GeneratedPass123 <<<\"\$1\"" _ "$out"
+check "generated password file removed once used" [ ! -e /root/deploy.koncreet-password ]
+
+echo "== sudo group member with a locked password is refused =="
+reset_ssh
+make_user deploy sudo
+passwd -l deploy >/dev/null
+out="$(koncreet --yes ssh apply 2>&1)"; rc=$?
+check "ssh apply fails" [ "$rc" -ne 0 ]
+check "nothing hardened" no_dropin
+check "names the locked password" grep -q "password is locked or unset" <<<"$out"
+check "gives the fix" grep -q "passwd deploy" <<<"$out"
+
+echo "== generated password changed with passwd is not shown =="
 reset_ssh
 make_user deploy sudo
 echo 'GeneratedPass123' >/root/deploy.koncreet-password
-( cd "$ROOT" && source lib/common.sh && source lib/ui.sh && ui_init && source modules/ssh.sh \
-  && KONCREET_YES=0 KONCREET_DRY_RUN=0 ssh_confirm_sudo_password deploy </dev/null ) >/dev/null 2>&1
-check "no tty and no --yes refuses" [ "$?" -eq 1 ]
+echo 'deploy:MyOwnPass456' | chpasswd
 out="$(koncreet --yes ssh apply 2>&1)"
-check "--yes shows the password" grep -q "GeneratedPass123" <<<"$out"
-rm -f /root/deploy.koncreet-password
+check "stale password is not printed" bash -c "! grep -q GeneratedPass123 <<<\"\$1\"" _ "$out"
+check "stale password file removed" [ ! -e /root/deploy.koncreet-password ]
+check "says why it was removed" grep -q "no longer matched deploy's password" <<<"$out"
+check "SSH still hardened" [ -f "$DROPIN" ]
 
 echo "== SSH client IP is found under sudo =="
 got="$(SSH_CONNECTION='198.51.100.7 51234 10.0.0.2 22' bash -c \
@@ -138,9 +174,58 @@ check "plan says SKIP" grep -q -- '- SKIP SSH harden' <<<"$out"
 check "first run does not harden" no_dropin
 check "baseline created deploy with sudo" bash -c "id -nG deploy | grep -qw sudo"
 out="$(koncreet --yes apply -c "$CONF" 2>&1)"
-check "second run hardens" [ -f "$DROPIN" ]
-check "second run counts SSH as a step" grep -q '\[2/2\] SSH hardening' <<<"$out"
+check "second root run still skips (generated password unproven)" \
+  grep -q -- "- SKIP SSH harden - 'deploy' still has the sudo password koncreet generated" <<<"$out"
+check "second root run does not harden" no_dropin
+chmod 644 "$CONF"
+out="$(as_user_sudo deploy "$(cat /root/deploy.koncreet-password)" --yes apply -c "$CONF" 2>&1)"
+check "run through sudo as deploy hardens" [ -f "$DROPIN" ]
+check "that run counts SSH as a step" grep -q '\[2/2\] SSH hardening' <<<"$out"
+check "generated password file removed" [ ! -e /root/deploy.koncreet-password ]
 rm -f "$CONF"
+
+echo "== fresh box, only root has keys, apply with ssh_harden=true (real-world incident) =="
+# A stock VPS image: root has keys, password and root login are on. firewall,
+# fail2ban and updates need a real kernel/systemd, and do not touch the SSH
+# decision, so baseline + ssh is enough to reproduce the skip.
+reset_ssh
+for u in deploy newadmin; do userdel -r "$u" >/dev/null 2>&1 || true; done
+rm -f /root/deploy.koncreet-password /root/newadmin.koncreet-password
+mkdir -p /root/.ssh
+echo "$KEY" >/root/.ssh/authorized_keys
+printf '%s\n' 'PasswordAuthentication yes' 'PermitRootLogin yes' >"$DROPIN_DIR/50-cloud-init.conf"
+ln -sf "$ROOT/koncreet" /usr/local/bin/koncreet
+: >/var/log/koncreet.log
+CONF="$(mktemp)"
+printf 'modules=baseline,ssh\nuser=newadmin\nssh_harden=true\n' >"$CONF"
+out="$(koncreet --yes apply -c "$CONF" 2>&1)"
+check "SSH skipped by the pre-run check" grep -q -- '- SKIP SSH harden' <<<"$out"
+check "nothing hardened" no_dropin
+check "password login still on" [ "$(effective passwordauthentication)" = "yes" ]
+check "skip written to the log" grep -q '\[WARN\] SKIP SSH harden' /var/log/koncreet.log
+check "done line names the skipped module" grep -q 'Done - 1 module skipped (ssh)' <<<"$out"
+check "checklist says SSH is not hardened" grep -q 'SSH is NOT hardened yet' <<<"$out"
+check "checklist gives the command" grep -q 'log in as newadmin and run sudo -v, run: sudo koncreet ssh apply' <<<"$out"
+out="$(koncreet doctor 2>&1)"
+check "doctor: ready line says to go through sudo" \
+  grep -q "ready for ssh apply as 'newadmin': log in as newadmin, then run: sudo koncreet ssh apply" <<<"$out"
+check "doctor: warns with the effective values" \
+  grep -q 'SSH hardening not applied: passwordauthentication yes, permitrootlogin yes - run: sudo koncreet ssh apply' <<<"$out"
+check "doctor: not all clear" bash -c "! grep -q 'all clear' <<<\"\$1\"" _ "$out"
+out="$(koncreet ssh status 2>&1)"
+check "status agrees with doctor" \
+  grep -q 'SSH hardening not applied: passwordauthentication yes, permitrootlogin yes' <<<"$out"
+check "login MOTD warns" grep -q 'SSH password or root login is still on' < <(sh /etc/update-motd.d/99-koncreet)
+chmod 644 "$CONF"
+out="$(as_user_sudo newadmin "$(cat /root/newadmin.koncreet-password)" --yes apply -c "$CONF" 2>&1)"
+check "second run, through sudo as newadmin, hardens" [ -f "$DROPIN" ]
+check "second run has no skip reminder" bash -c "! grep -q 'NOT hardened' <<<\"\$1\"" _ "$out"
+check "generated password file removed after use" [ ! -e /root/newadmin.koncreet-password ]
+out="$(koncreet doctor 2>&1)"
+check "doctor after harden: in effect" grep -q 'password auth + root login off (00-koncreet.conf)' <<<"$out"
+check "doctor after harden: all clear" grep -q 'doctor: all clear' <<<"$out"
+check "login MOTD quiet after harden" bash -c "! sh /etc/update-motd.d/99-koncreet | grep -q 'still on'"
+rm -f "$CONF" /usr/local/bin/koncreet "$DROPIN_DIR/50-cloud-init.conf"
 
 echo "== dry-run asks nothing, changes nothing, logs outside the tree =="
 reset_ssh
