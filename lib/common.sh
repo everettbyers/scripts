@@ -75,6 +75,15 @@ die() {
   exit 1
 }
 
+koncreet_is_root() {
+  [[ "${EUID:-$(id -u)}" -eq 0 ]]
+}
+
+# Where baseline keeps the sudo password it generated for a new user.
+koncreet_passfile() {
+  echo "${KONCREET_PASSFILE_DIR:-/root}/${1}.koncreet-password"
+}
+
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     die "Run as root: sudo $0 $*"

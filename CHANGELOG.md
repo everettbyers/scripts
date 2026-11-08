@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.5
+
+- doctor: always checks the effective SSH settings with `sshd -T` when run as root, not only when a koncreet drop-in exists; with no drop-in and password/root login still on it warns with the live values and points to `sudo koncreet ssh apply` (so it no longer ends with "all clear"), and with no drop-in but everything already off it says so; Match blocks that re-enable password/root login are reported too
+- doctor: the admin-user line now reads "ready for ssh apply" instead of "SSH harden ready", which looked like SSH was already hardened; as non-root it says SSH was not checked and points to `sudo koncreet doctor` (never calls sudo)
+- ssh status: reports the same facts as doctor (not applied with the effective values, or already off without a koncreet drop-in, plus Match overrides)
+- apply / menu "Run everything": when SSH hardening was requested but skipped by the pre-run safety check, the skip is now written to `/var/log/koncreet.log`, the final line says "Done - 1 module skipped (ssh)", and "Before you disconnect" lists "SSH is NOT hardened yet" with the `sudo koncreet ssh apply` step. When SSH hardening runs is unchanged
+- baseline: the login MOTD warns while there is no koncreet SSH drop-in and `sshd -T` shows password/root login on (exits at once when the drop-in exists, caps `sshd -T` at 2 seconds, stays silent on errors); existing installs pick this up on the next `baseline apply`
+- ssh: `ssh apply` no longer prints the sudo password koncreet generated. While that password is still the user's password (checked against `/etc/shadow` with an exact hash check, so a same-day `passwd` is caught), root login is only disabled when the run comes through sudo as that user: log in as the user, check `sudo -v`, then run `sudo koncreet ssh apply`. That proves key login, sudo rights and the password in one step. A run straight from a root session refuses, even with `--yes`, and `apply -c` / "Run everything" plan a SKIP with that reason instead. If the user already set their own password the run goes ahead and the stale `/root/USER.koncreet-password` is removed; after a successful run through sudo the file is removed too, so no plaintext copy stays on disk. `baseline` still shows the password once when it creates the user
+- ssh: a user in the sudo group whose password is locked or unset (and no `NOPASSWD` rule) no longer passes the safety check, since sudo cannot work for them; the error and `doctor` say to run `passwd USER`
+- doctor: when the generated password still has to be proven, the admin line says to log in as that user and run `sudo koncreet ssh apply`
+- ssh: the Match and conflicting-line scans now follow `Include` lines in `sshd_config` (recursively), understand `Keyword=value`, and treat the old `ChallengeResponseAuthentication` name as keyboard-interactive; the port scan uses the same file list
+
 ## 0.2.4
 
 - ssh: after apply, also fail closed when a `Match` block re-enables password/root/kbd-interactive auth (global `sshd -T` misses those); probe effective settings with `sshd -T -C` for root and the admin user

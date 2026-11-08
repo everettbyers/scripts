@@ -101,9 +101,18 @@ EOF
 baseline_write_motd() {
   local date_s
   date_s="$(date -u '+%Y-%m-%d')"
+  local dropin="${KONCREET_SSH_DROPIN:-/etc/ssh/sshd_config.d/00-koncreet.conf}"
   write_file "$KONCREET_MOTD" <<EOF
 #!/bin/sh
+# Managed by koncreet. Runs as root on every login, so it must stay quick and quiet.
 echo "Hardened by koncreet on ${date_s} - sudo koncreet status"
+[ -f "${dropin}" ] && exit 0
+command -v sshd >/dev/null 2>&1 || exit 0
+command -v timeout >/dev/null 2>&1 || exit 0
+if timeout 2 sshd -T 2>/dev/null | awk '(\$1 == "passwordauthentication" || \$1 == "permitrootlogin" || \$1 == "kbdinteractiveauthentication") && \$2 != "no" { f = 1 } END { exit !f }'; then
+  echo "WARNING: SSH password or root login is still on - run: sudo koncreet ssh apply"
+fi
+exit 0
 EOF
   if [[ "$KONCREET_DRY_RUN" -eq 0 ]]; then
     chmod 755 "$KONCREET_MOTD"
@@ -131,7 +140,7 @@ baseline_apply() {
         local pass passfile
         pass="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)"
         echo "${new_user}:${pass}" | chpasswd
-        passfile="/root/${new_user}.koncreet-password"
+        passfile="$(koncreet_passfile "$new_user")"
         # Tight umask only for the password file; restore so later /etc drop-ins stay world-readable.
         local prev_umask
         prev_umask="$(umask)"
